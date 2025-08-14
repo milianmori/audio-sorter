@@ -78,6 +78,15 @@ python audio-sorter.py \
   --log "out.csv"
 ```
 
+### Run
+```bash
+python3 /Users/milianmori/Documents/repositories/audio-sorter/audio-sorter.py \
+  --src "/Volumes/MM_DROPBOX/Dropbox/werkbank/triality" \
+  --dst "/Volumes/MM_DROPBOX/Dropbox/werkbank/audio cosmos triality" \
+  --ml \
+  --log "/Users/milianmori/Documents/repositories/audio-sorter/out.csv"
+```
+
 Deaktivieren der virtuellen Umgebung:
 ```bash
 deactivate
