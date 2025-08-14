@@ -34,11 +34,11 @@ Installation (Beispiel macOS, Homebrew ffmpeg):
   pip install tensorflow
 
 Beispielaufrufe:
-  python audio_sorter.py \
-    --src "/Volumes/OldDrive/Audio" \
-    --dst "/Volumes/NewDrive/Audio_Sortiert" \
-    --normalize lufs --target-lufs -14 --true-peak -1.0 \
-    --output-format wav --workers 4 --log out.csv
+python audio-sorter.py \
+  --src "/Users/milianmori/Documents/repositories/audio-sorter/test-files" \
+  --dst "/Users/milianmori/Documents/repositories/audio-sorter/test-files" \
+  --normalize lufs --target-lufs -14 --true-peak -1.0 \
+  --output-format wav --log out.csv
 
   # Nur sortieren, ohne Normalisierung:
   python audio_sorter.py --src ./unsorted --dst ./Audio_Sortiert --normalize none
