@@ -23,6 +23,11 @@ pip install tensorflow==2.16.1 tensorflow-hub
 
 ---
 
-python3 audio-sorter.py -i /Users/milianmori/Documents/repositories/audio-sorter/test-files/src -o /Users/milianmori/Documents/repositories/audio-sorter/test-files/dest --ml
-
-python audio-sorter.py --src "/Users/milianmori/Documents/repositories/audio-sorter/test-files/src/" --dst "/Users/milianmori/Documents/repositories/audio-sorter/test-files/dest" --ml --log out.csv
+### Run
+```bash
+python3 /Users/milianmori/Documents/repositories/audio-sorter/audio-sorter.py \
+  --src "/Users/milianmori/Documents/repositories/audio-sorter/test-files/src" \
+  --dst "/Users/milianmori/Documents/repositories/audio-sorter/test-files/dest" \
+  --ml \
+  --log "/Users/milianmori/Documents/repositories/audio-sorter/out.csv"
+```

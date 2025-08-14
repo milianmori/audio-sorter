@@ -47,6 +47,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from tqdm import tqdm
+import soundfile as sf
+import os
 
 # Audio analysis
 import librosa
@@ -218,6 +220,51 @@ def extract_features(path: Path) -> Optional[Features]:
         return Features(duration, sr, n_onsets, perc_ratio, harm_ratio, zcr, centroid, rolloff, flatness, low_ratio, mid_ratio, high_ratio)
     except Exception:
         return None
+
+# -------------------------------
+# Normalization helpers (peak to target dBFS)
+# -------------------------------
+
+SUPPORTED_NORMALIZE_EXTS = {".wav", ".aiff", ".aif", ".flac"}
+
+
+def dbfs_to_linear(dbfs: float) -> float:
+    return float(10.0 ** (dbfs / 20.0))
+
+
+def peak_normalize_array(y: np.ndarray, target_dbfs: float = -1.0) -> Tuple[np.ndarray, float, float]:
+    if y is None or y.size == 0:
+        return y, 0.0, 0.0
+    peak_before = float(np.max(np.abs(y)))
+    if peak_before <= 0.0:
+        return y, peak_before, peak_before
+    target_peak = dbfs_to_linear(target_dbfs)
+    scale = target_peak / peak_before
+    y_out = y * scale
+    # Safety clamp
+    y_out = np.clip(y_out, -1.0, 1.0)
+    peak_after = float(np.max(np.abs(y_out)))
+    return y_out, peak_before, peak_after
+
+
+def try_normalize_file_to_target(src: Path, dst: Path, target_dbfs: float = -1.0) -> Tuple[bool, str, float, float]:
+    ext = src.suffix.lower()
+    if ext not in SUPPORTED_NORMALIZE_EXTS:
+        return (False, "unsupported_ext", 0.0, 0.0)
+    try:
+        y, sr = sf.read(str(src), dtype='float32')
+    except Exception:
+        return (False, "sf_read_failed", 0.0, 0.0)
+    y_norm, pk_before, pk_after = peak_normalize_array(y, target_dbfs=target_dbfs)
+    try:
+        sf.write(str(dst), y_norm, sr)
+        try:
+            shutil.copystat(src, dst)
+        except Exception:
+            pass
+        return (True, "ok", pk_before, pk_after)
+    except Exception:
+        return (False, "sf_write_failed", pk_before, pk_after)
 
 # -------------------------------
 # Heuristic decision logic
@@ -440,7 +487,8 @@ def main():
     # Log setup
     log_rows: List[List[str]] = []
     header = [
-        'source_path','dest_path','category','subcategory','reason','duration','sr','n_onsets','perc_ratio','harm_ratio','zcr','centroid','rolloff','flatness','low_ratio','mid_ratio','high_ratio'
+        'source_path','dest_path','category','subcategory','reason','duration','sr','n_onsets','perc_ratio','harm_ratio','zcr','centroid','rolloff','flatness','low_ratio','mid_ratio','high_ratio',
+        'normalized','peak_before','peak_after','target_dbfs'
     ]
     log_rows.append(header)
 
@@ -452,14 +500,20 @@ def main():
             target_dir = dst / "exports"
             ensure_dir(target_dir)
             target = unique_target(target_dir / f.name)
-            try:
-                if args.copy:
+            # Normalize if possible; otherwise copy/move
+            normalized = False
+            norm_pk_before = 0.0
+            norm_pk_after = 0.0
+            norm_target_dbfs = -1.0
+            ok, norm_reason, norm_pk_before, norm_pk_after = try_normalize_file_to_target(f, target, target_dbfs=norm_target_dbfs)
+            if ok:
+                normalized = True
+            else:
+                try:
                     shutil.copy2(f, target)
-                else:
-                    shutil.move(f, target)
-            except Exception as e:
-                print(f"Fehler bei {f}: {e}")
-                continue
+                except Exception as e:
+                    print(f"Fehler bei {f}: {e}")
+                    continue
             # Feature row for log (Kategorie: exports, ohne Subkategorie)
             feat = extract_features(target)
             row = [
@@ -474,6 +528,13 @@ def main():
                 ]
             else:
                 row += ["", "", "", "", "", "", "", "", "", "", "", ""]
+            # Normalization columns
+            row += [
+                "1" if normalized else "0",
+                f"{norm_pk_before:.6f}" if normalized and norm_pk_before > 0 else "",
+                f"{norm_pk_after:.6f}" if normalized and norm_pk_after > 0 else "",
+                f"{norm_target_dbfs:.2f}"
+            ]
             log_rows.append(row)
             continue
         cat, sub, reason = decide_category(f, use_ml=args.ml)
@@ -483,14 +544,20 @@ def main():
         new_name = f"{cat_prefix}_{sub}_{f.stem}{f.suffix}"
         target = target_dir / new_name
         target = unique_target(target)
-        try:
-            if args.copy:
+        # Normalize if possible; otherwise copy/move
+        normalized = False
+        norm_pk_before = 0.0
+        norm_pk_after = 0.0
+        norm_target_dbfs = -1.0
+        ok, norm_reason, norm_pk_before, norm_pk_after = try_normalize_file_to_target(f, target, target_dbfs=norm_target_dbfs)
+        if ok:
+            normalized = True
+        else:
+            try:
                 shutil.copy2(f, target)
-            else:
-                shutil.move(f, target)
-        except Exception as e:
-            print(f"Fehler bei {f}: {e}")
-            continue
+            except Exception as e:
+                print(f"Fehler bei {f}: {e}")
+                continue
         # Feature row for log
         feat = extract_features(target)
         row = [
@@ -505,6 +572,13 @@ def main():
             ]
         else:
             row += ["", "", "", "", "", "", "", "", "", "", "", ""]
+        # Normalization columns
+        row += [
+            "1" if normalized else "0",
+            f"{norm_pk_before:.6f}" if normalized and norm_pk_before > 0 else "",
+            f"{norm_pk_after:.6f}" if normalized and norm_pk_after > 0 else "",
+            f"{norm_target_dbfs:.2f}"
+        ]
         log_rows.append(row)
 
     # write log
