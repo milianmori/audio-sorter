@@ -445,6 +445,37 @@ def main():
     log_rows.append(header)
 
     for f in tqdm(files, unit='file', desc='Sorting'):
+        # Sonderfall: Liegt die Datei in einem Ordner namens "export" oder "exports"?
+        # Dann in Ziel unter "exports" ablegen, ohne Umbenennung.
+        is_export = any(parent.name.lower() in ("export", "exports") for parent in f.parents)
+        if is_export:
+            target_dir = dst / "exports"
+            ensure_dir(target_dir)
+            target = unique_target(target_dir / f.name)
+            try:
+                if args.copy:
+                    shutil.copy2(f, target)
+                else:
+                    shutil.move(f, target)
+            except Exception as e:
+                print(f"Fehler bei {f}: {e}")
+                continue
+            # Feature row for log (Kategorie: exports, ohne Subkategorie)
+            feat = extract_features(target)
+            row = [
+                str(f), str(target), "exports", "", "from_export_folder"
+            ]
+            if feat:
+                row += [
+                    f"{feat.duration:.3f}", str(feat.sr), str(feat.n_onsets),
+                    f"{feat.perc_ratio:.3f}", f"{feat.harm_ratio:.3f}", f"{feat.zcr:.4f}",
+                    f"{feat.centroid:.1f}", f"{feat.rolloff:.1f}", f"{feat.flatness:.3f}",
+                    f"{feat.low_ratio:.3f}", f"{feat.mid_ratio:.3f}", f"{feat.high_ratio:.3f}",
+                ]
+            else:
+                row += ["", "", "", "", "", "", "", "", "", "", "", ""]
+            log_rows.append(row)
+            continue
         cat, sub, reason = decide_category(f, use_ml=args.ml)
         cat_prefix = category_prefix(cat)
         target_dir = dst / cat / sub
