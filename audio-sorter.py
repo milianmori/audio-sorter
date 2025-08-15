@@ -257,7 +257,19 @@ def try_normalize_file_to_target(src: Path, dst: Path, target_dbfs: float = -1.0
         return (False, "sf_read_failed", 0.0, 0.0)
     y_norm, pk_before, pk_after = peak_normalize_array(y, target_dbfs=target_dbfs)
     try:
-        sf.write(str(dst), y_norm, sr)
+        # For AIFF, many players have limited support for float subtypes (AIFC/float).
+        # Force writing as PCM to ensure broad compatibility.
+        dst_ext = dst.suffix.lower()
+        if dst_ext in ('.aif', '.aiff'):
+            sf.write(str(dst), y_norm, sr, format='AIFF', subtype='PCM_24')
+        elif dst_ext == '.wav':
+            # Write WAV as 24-bit PCM
+            sf.write(str(dst), y_norm, sr, format='WAV', subtype='PCM_24')
+        elif dst_ext == '.flac':
+            # Ensure FLAC is encoded with 24-bit samples
+            sf.write(str(dst), y_norm, sr, format='FLAC', subtype='PCM_24')
+        else:
+            sf.write(str(dst), y_norm, sr)
         try:
             shutil.copystat(src, dst)
         except Exception:
