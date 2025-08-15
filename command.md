@@ -80,7 +80,7 @@ python audio-sorter.py \
 
 ### Run
 ```bash
-python3 /Users/milianmori/Documents/repositories/audio-sorter/audio-sorter.py \
+python3 audio-sorter.py \
   --src "/Volumes/MM_DROPBOX/Dropbox/werkbank/triality" \
   --dst "/Volumes/MM_DROPBOX/Dropbox/werkbank/audio cosmos triality" \
   --ml \
