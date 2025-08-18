@@ -110,6 +110,10 @@ python3.11 /Users/milianmori/Documents/repositories/audio-sorter/audio_cleanup.p
   "/Users/milianmori/Documents/repositories/audio-sorter/test-files/src"
 ```
 
+Automatisches Trim-Log:
+- Bei jedem Lauf wird ein CSV-Log `log.csv` direkt im Quellordner erzeugt.
+- Spalten: `source_path,duration_before_s,duration_after_s,trimmed_ms,threshold_db,min_silence_ms,mean_volume_db`
+
 Optionaler Output-Pfad (wird ignoriert, nur aus Kompatibilitätsgründen vorhanden), ohne Trimmen:
 ```bash
 python3.11 /Users/milianmori/Documents/repositories/audio-sorter/audio_cleanup.py \

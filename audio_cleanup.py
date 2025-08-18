@@ -1,4 +1,5 @@
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -278,6 +279,7 @@ def process_in_place(
     silence_threshold_db: float,
     min_silence_ms: int,
     silent_move_to: Optional[Path] = None,
+    trim_log_rows: Optional[List[List[str]]] = None,
 ) -> List[Path]:
     processed_paths: List[Path] = []
     for src in find_audio_files(input_dir):
@@ -291,6 +293,7 @@ def process_in_place(
             continue
 
         mean_db = measure_mean_volume_db(src)
+        orig_duration_s: Optional[float] = parse_duration_seconds(info)
         if skip_silent and mean_db == float("-inf"):
             if silent_move_to is not None:
                 try:
@@ -317,10 +320,35 @@ def process_in_place(
                 min_silence_ms=min_silence_ms,
             )
             if ok and tmp_dst.exists():
+                # Probe trimmed duration before replacing
+                info_after = ffprobe_json(tmp_dst)
+                after_duration_s: Optional[float] = parse_duration_seconds(info_after) if info_after else None
                 try:
                     os.replace(str(tmp_dst), str(src))
                     processed_paths.append(src)
-                    print(f"[ok] trimmed in-place: {src}")
+                    # Compute and report trim details if possible
+                    trimmed_ms: Optional[int] = None
+                    if orig_duration_s is not None and after_duration_s is not None:
+                        delta_ms = int(round((orig_duration_s - after_duration_s) * 1000.0))
+                        trimmed_ms = max(0, delta_ms)
+                        print(
+                            f"[trim] {src} before={orig_duration_s:.3f}s after={after_duration_s:.3f}s trimmed={trimmed_ms}ms "
+                            f"(threshold={silence_threshold_db}dB, min_silence={min_silence_ms}ms)"
+                        )
+                    else:
+                        print(f"[ok] trimmed in-place: {src}")
+                    # Append to CSV log if enabled
+                    if trim_log_rows is not None:
+                        row = [
+                            str(src),
+                            f"{orig_duration_s:.3f}" if orig_duration_s is not None else "",
+                            f"{after_duration_s:.3f}" if after_duration_s is not None else "",
+                            str(trimmed_ms) if trimmed_ms is not None else "",
+                            f"{silence_threshold_db}",
+                            str(min_silence_ms),
+                            ("-inf" if mean_db == float("-inf") else (f"{mean_db:.2f}" if mean_db is not None else "")),
+                        ]
+                        trim_log_rows.append(row)
                 except Exception as e:
                     print(f"[error] failed to replace original with trimmed file: {src} -> {e}")
                     try:
@@ -528,6 +556,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=Path,
         help="If set with --delete-duplicates, move duplicates into this directory instead of deleting",
     )
+    # Trim log is always written to input_dir/log.csv
 
     args = parser.parse_args(argv)
 
@@ -550,6 +579,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         (input_dir / "tobedeleted") if args.delete_duplicates and args.move_duplicates_to is None else args.move_duplicates_to
     )
 
+    # Prepare trim log (always generated in input_dir as log.csv)
+    trim_log_rows: List[List[str]] = [[
+        "source_path",
+        "duration_before_s",
+        "duration_after_s",
+        "trimmed_ms",
+        "threshold_db",
+        "min_silence_ms",
+        "mean_volume_db",
+    ]]
+
     processed = process_in_place(
         input_dir=input_dir,
         skip_silent=skip_silent,
@@ -557,6 +597,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         silence_threshold_db=args.silence_threshold_db,
         min_silence_ms=args.min_silence_ms,
         silent_move_to=default_move_dir,
+        trim_log_rows=trim_log_rows,
     )
 
     print(f"Processed {len(processed)} files.")
@@ -576,6 +617,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             move_to=default_move_dir,
         )
         print(f"Duplicates found: {len(dups)}")
+
+    # Write trim log to input_dir/log.csv
+    log_path = input_dir / "log.csv"
+    try:
+        with open(log_path, "w", newline="", encoding="utf-8") as fp:
+            writer = csv.writer(fp)
+            writer.writerows(trim_log_rows)
+        print(f"Trim log written: {log_path.resolve()}")
+    except Exception as e:
+        print(f"[error] failed to write trim log to {log_path}: {e}")
 
     return 0
 
