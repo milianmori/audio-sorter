@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -40,6 +41,19 @@ CODEC_FOR_EXTENSION: Dict[str, str] = {
 }
 
 
+# Optional progress bars
+try:
+    from tqdm import tqdm  # type: ignore
+except Exception:
+    tqdm = None  # Fallback to no-op progress when tqdm not installed
+
+
+# Timeouts (seconds), configurable via CLI
+PROBE_TIMEOUT_S: float = 60.0
+FFMPEG_TIMEOUT_S: float = 900.0
+HASH_TIMEOUT_S: float = 900.0
+
+
 @dataclass
 class AudioFileInfo:
     path: Path
@@ -61,14 +75,19 @@ def ensure_binaries_available() -> None:
         sys.exit(2)
 
 
-def run_cmd(cmd: List[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        text=True,
-    )
+def run_cmd(cmd: List[str], timeout_s: Optional[float] = None) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        # Represent timeout as a special non-zero return code
+        return subprocess.CompletedProcess(cmd, 124, stdout="", stderr="timeout")
 
 
 def ffprobe_json(path: Path) -> Optional[dict]:
@@ -82,7 +101,7 @@ def ffprobe_json(path: Path) -> Optional[dict]:
         "json",
         str(path),
     ]
-    proc = run_cmd(cmd)
+    proc = run_cmd(cmd, timeout_s=PROBE_TIMEOUT_S)
     if proc.returncode != 0:
         return None
     try:
@@ -139,7 +158,7 @@ def measure_mean_volume_db(path: Path) -> Optional[float]:
         "null",
         "-",
     ]
-    proc = run_cmd(cmd)
+    proc = run_cmd(cmd, timeout_s=PROBE_TIMEOUT_S)
     if proc.returncode != 0:
         return None
     mean_db: Optional[float] = None
@@ -191,7 +210,7 @@ def trim_silence(
         codec,
         str(dst),
     ]
-    proc = run_cmd(cmd)
+    proc = run_cmd(cmd, timeout_s=FFMPEG_TIMEOUT_S)
     return proc.returncode == 0 and dst.exists() and dst.stat().st_size > 0
 
 
@@ -199,6 +218,9 @@ def pcm_content_hash(
     path: Path,
     sample_rate_hz: int = 16000,
     channels: int = 1,
+    expected_num_bytes: Optional[int] = None,
+    timeout_s: Optional[float] = None,
+    progress_desc: Optional[str] = None,
 ) -> Optional[str]:
     # Decode to a canonical PCM stream and hash it
     cmd = [
@@ -223,15 +245,31 @@ def pcm_content_hash(
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         hasher = hashlib.sha256()
         assert proc.stdout is not None
-        while True:
-            chunk = proc.stdout.read(1024 * 1024)
-            if not chunk:
-                break
-            hasher.update(chunk)
-        proc.wait()
-        if proc.returncode != 0:
-            return None
-        return hasher.hexdigest()
+        start_time = time.time()
+        bytes_read = 0
+        per_file_bar = None
+        try:
+            if tqdm is not None and expected_num_bytes is not None:
+                per_file_bar = tqdm(total=expected_num_bytes, desc=progress_desc or f"hash {path.name}", unit="B", unit_scale=True, leave=False)
+            while True:
+                chunk = proc.stdout.read(1024 * 1024)
+                if not chunk:
+                    break
+                bytes_read += len(chunk)
+                hasher.update(chunk)
+                if per_file_bar is not None:
+                    per_file_bar.update(len(chunk))
+                if timeout_s is not None and (time.time() - start_time) > timeout_s:
+                    proc.kill()
+                    proc.wait()
+                    return None
+            proc.wait()
+            if proc.returncode != 0:
+                return None
+            return hasher.hexdigest()
+        finally:
+            if per_file_bar is not None:
+                per_file_bar.close()
     except Exception:
         return None
 
@@ -282,14 +320,22 @@ def process_in_place(
     trim_log_rows: Optional[List[List[str]]] = None,
 ) -> List[Path]:
     processed_paths: List[Path] = []
-    for src in find_audio_files(input_dir):
+    files_list = list(find_audio_files(input_dir))
+    overall_bar = None
+    if tqdm is not None:
+        overall_bar = tqdm(total=len(files_list), desc="process", unit="file")
+    for src in files_list:
         info = ffprobe_json(src)
         if info is None:
             print(f"[skip] ffprobe failed: {src}")
+            if overall_bar is not None:
+                overall_bar.update(1)
             continue
 
         if not has_audio_stream(info):
             print(f"[skip] no audio stream: {src}")
+            if overall_bar is not None:
+                overall_bar.update(1)
             continue
 
         mean_db = measure_mean_volume_db(src)
@@ -308,6 +354,8 @@ def process_in_place(
                     print(f"[error] failed to move silent file: {src} -> {dest} ({e})")
             else:
                 print(f"[skip] digital silence only: {src}")
+            if overall_bar is not None:
+                overall_bar.update(1)
             continue
 
         if trim:
@@ -366,6 +414,11 @@ def process_in_place(
             processed_paths.append(src)
             print(f"[ok] checked (no trim): {src}")
 
+        if overall_bar is not None:
+            overall_bar.update(1)
+
+    if overall_bar is not None:
+        overall_bar.close()
     return processed_paths
 
 
@@ -407,6 +460,28 @@ def dedupe_similar(
     duplicates: List[Tuple[Path, Path]] = []
     hash_cache: Dict[Path, Optional[str]] = {}
 
+    # Persistent cache for hashes keyed by absolute path with mtime+size guard
+    cache_path = (target_dir / ".audio_cleanup_cache.json")
+    persistent_cache: Dict[str, Dict[str, float | str | int]] = {}
+    try:
+        if cache_path.exists():
+            with open(cache_path, "r", encoding="utf-8") as fp:
+                loaded = json.load(fp)
+                if isinstance(loaded, dict):
+                    persistent_cache = loaded  # type: ignore
+    except Exception:
+        persistent_cache = {}
+
+    def file_signature(p: Path) -> Tuple[float, int]:
+        st = p.stat()
+        return (st.st_mtime, st.st_size)
+
+    # Overall hashing progress across unique files touched
+    hashed_seen: Dict[Path, bool] = {}
+    overall_hash_bar = None
+    if tqdm is not None:
+        overall_hash_bar = tqdm(total=len(infos), desc="hash", unit="file")
+
     for qdur, group in by_duration.items():
         if len(group) < 2:
             continue
@@ -433,15 +508,50 @@ def dedupe_similar(
                     hash_cache.pop(b.path, None)
                     continue
 
-                # Hash audio content in canonical PCM
-                ha = hash_cache.get(a.path)
-                if ha is None:
-                    ha = pcm_content_hash(a.path)
-                    hash_cache[a.path] = ha
-                hb = hash_cache.get(b.path)
-                if hb is None:
-                    hb = pcm_content_hash(b.path)
-                    hash_cache[b.path] = hb
+                # Hash audio content in canonical PCM with persistent cache and progress
+                def ensure_hash(p: Path, dur_seconds: float) -> Optional[str]:
+                    # In-memory cache
+                    existing = hash_cache.get(p)
+                    if existing is not None:
+                        return existing
+                    # Persistent cache
+                    key = str(p.resolve())
+                    try:
+                        mtime, size = file_signature(p)
+                    except FileNotFoundError:
+                        return None
+                    cached = persistent_cache.get(key)
+                    if (
+                        isinstance(cached, dict)
+                        and float(cached.get("mtime", -1)) == mtime
+                        and int(cached.get("size", -1)) == size
+                        and isinstance(cached.get("hash"), str)
+                    ):
+                        h = str(cached["hash"])  # type: ignore
+                        hash_cache[p] = h
+                        return h
+                    # Compute
+                    bytes_total = int(dur_seconds * 16000 * 1 * 2)
+                    h = pcm_content_hash(
+                        p,
+                        sample_rate_hz=16000,
+                        channels=1,
+                        expected_num_bytes=bytes_total,
+                        timeout_s=HASH_TIMEOUT_S,
+                        progress_desc=f"hash {p.name}",
+                    )
+                    hash_cache[p] = h
+                    # Update persistent cache on success
+                    if h is not None:
+                        persistent_cache[key] = {"mtime": mtime, "size": size, "hash": h}
+                    # Update overall hash progress once per path
+                    if p not in hashed_seen and overall_hash_bar is not None:
+                        overall_hash_bar.update(1)
+                        hashed_seen[p] = True
+                    return h
+
+                ha = ensure_hash(a.path, a.duration_seconds)
+                hb = ensure_hash(b.path, b.duration_seconds)
                 if ha is None or hb is None:
                     continue
                 if ha != hb:
@@ -477,14 +587,26 @@ def dedupe_similar(
                         print(f"[dupe->move] {drop} -> {dest} (keep {keep})")
                         shutil.move(str(drop), str(dest))
                         hash_cache.pop(drop, None)
+                        # Remove from persistent cache as path moved
+                        persistent_cache.pop(str(drop.resolve()), None)
                     else:
                         print(f"[dupe->delete] {drop} (keep {keep})")
                         drop.unlink(missing_ok=True)
                         hash_cache.pop(drop, None)
+                        persistent_cache.pop(str(drop.resolve()), None)
                 else:
                     print(f"[dupe] would remove {drop} (keep {keep})")
 
                 duplicates.append((keep, drop))
+
+    # Close progress bars and persist cache
+    if overall_hash_bar is not None:
+        overall_hash_bar.close()
+    try:
+        with open(cache_path, "w", encoding="utf-8") as fp:
+            json.dump(persistent_cache, fp)
+    except Exception:
+        pass
 
     return duplicates
 
@@ -556,6 +678,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=Path,
         help="If set with --delete-duplicates, move duplicates into this directory instead of deleting",
     )
+    parser.add_argument(
+        "--probe-timeout-s",
+        type=float,
+        default=60.0,
+        help="Timeout in seconds for probing operations (ffprobe/volumedetect). Default: 60",
+    )
+    parser.add_argument(
+        "--ffmpeg-timeout-s",
+        type=float,
+        default=900.0,
+        help="Timeout in seconds for trimming (ffmpeg). Default: 900",
+    )
+    parser.add_argument(
+        "--hash-timeout-s",
+        type=float,
+        default=900.0,
+        help="Timeout in seconds for hashing content. Default: 900",
+    )
     # Trim log is always written to input_dir/log.csv
 
     args = parser.parse_args(argv)
@@ -572,6 +712,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(f"Input:  {input_dir}")
     print(f"Options: skip_silent={skip_silent}, trim={trim}, threshold={args.silence_threshold_db} dB, min_silence={args.min_silence_ms} ms")
+
+    # Apply timeouts
+    global PROBE_TIMEOUT_S, FFMPEG_TIMEOUT_S, HASH_TIMEOUT_S
+    PROBE_TIMEOUT_S = float(args.probe_timeout_s)
+    FFMPEG_TIMEOUT_S = float(args.ffmpeg_timeout_s)
+    HASH_TIMEOUT_S = float(args.hash_timeout_s)
 
     # Determine duplicates move directory upfront so we can also move silent files there
     # Always create the "tobedeleted" folder in the source (input) directory by default
