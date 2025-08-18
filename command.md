@@ -101,6 +101,8 @@ Hinweis: FFmpeg/FFprobe ist erforderlich (siehe Installation oben).
 
 My command:
 python3 audio_cleanup.py "/Users/milianmori/Documents/repositories/audio-sorter/test-files/src" --delete-duplicates
+python3 audio_cleanup.py "/Volumes/MM_DROPBOX/Dropbox/audio/audio cosmos triality" --delete-duplicates
+
 
 Basislauf (überspringt Stille, trimmt Stille, schreibt in-place in den Quellordner):
 ```bash
