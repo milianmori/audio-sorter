@@ -91,3 +91,59 @@ Deaktivieren der virtuellen Umgebung:
 ```bash
 deactivate
 ```
+
+---
+
+### Audio Cleanup (zweites Skript)
+Dieses Skript überspringt Dateien ohne echten Audiostream oder mit reiner Stille, trimmt Stille am Anfang/Ende und findet Duplikate (Name ähnlich, Länge gleich/nahezu gleich, Audioinhalt tatsächlich identisch). Verarbeitung erfolgt jetzt **in-place**: Es wird kein Output-Ordner mehr erstellt.
+
+Hinweis: FFmpeg/FFprobe ist erforderlich (siehe Installation oben).
+
+My command:
+python3 audio_cleanup.py "/Users/milianmori/Documents/repositories/audio-sorter/test-files/src" --delete-duplicates
+
+Basislauf (überspringt Stille, trimmt Stille, schreibt in-place in den Quellordner):
+```bash
+python3.11 /Users/milianmori/Documents/repositories/audio-sorter/audio_cleanup.py \
+  "/Users/milianmori/Documents/repositories/audio-sorter/test-files/src"
+```
+
+Optionaler Output-Pfad (wird ignoriert, nur aus Kompatibilitätsgründen vorhanden), ohne Trimmen:
+```bash
+python3.11 /Users/milianmori/Documents/repositories/audio-sorter/audio_cleanup.py \
+  "/Users/milianmori/Documents/repositories/audio-sorter/test-files/src" \
+  --output "/Users/milianmori/Documents/repositories/audio-sorter/test-files/clean" \
+  --no-trim
+```
+
+Nur Duplikate finden (berichten):
+```bash
+python3.11 /Users/milianmori/Documents/repositories/audio-sorter/audio_cleanup.py \
+  "/Users/milianmori/Documents/repositories/audio-sorter/test-files/src" \
+  --dedupe
+```
+
+Duplikate löschen (standardmäßig werden sie nach `tobedeleted` unterhalb des Dedupe-Zielordners verschoben):
+```bash
+python3.11 /Users/milianmori/Documents/repositories/audio-sorter/audio_cleanup.py \
+  "/Users/milianmori/Documents/repositories/audio-sorter/test-files/src" \
+  --dedupe --delete-duplicates
+```
+```bash
+python3.11 /Users/milianmori/Documents/repositories/audio-sorter/audio_cleanup.py \
+  "/Users/milianmori/Documents/repositories/audio-sorter/test-files/src" \
+  --dedupe --delete-duplicates \
+  --move-duplicates-to "/Users/milianmori/Documents/repositories/audio-sorter/test-files/dupes"
+```
+
+Wichtige Optionen:
+- **--output**: Ignoriert; Verarbeitung erfolgt in-place (Option bleibt aus Rückwärtskompatibilität erhalten).
+- **--no-skip-silent**: Reine Stille nicht überspringen.
+- **--no-trim**: Stille nicht schneiden.
+- **--silence-threshold-db**: dBFS-Schwelle für Stille (Standard: -50).
+- **--min-silence-ms**: Mindestlänge der Stille in ms (Standard: 200).
+- **--dedupe / --dedupe-path**: Duplikatsuche (optional anderer Pfad als INPUT).
+- **--name-similarity**: Namensähnlichkeit 0..1 (Standard: 0.85). Datums-/Zeit-Suffixe wie `[2024-08-10 151650]` am Ende werden automatisch ignoriert.
+- **--duration-tolerance-ms**: Toleranz für Längenvergleich in ms (Standard: 50).
+- **--delete-duplicates**: Gefundene Duplikate entfernen (Standard: verschieben in `tobedeleted`).
+- **--move-duplicates-to**: Duplikate statt Standardziel in diesen Ordner verschieben.
