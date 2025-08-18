@@ -241,6 +241,7 @@ def pcm_content_hash(
         "s16le",
         "-",
     ]
+    proc: Optional[subprocess.Popen] = None
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         hasher = hashlib.sha256()
@@ -270,6 +271,14 @@ def pcm_content_hash(
         finally:
             if per_file_bar is not None:
                 per_file_bar.close()
+    except KeyboardInterrupt:
+        try:
+            if proc is not None:
+                proc.kill()
+                proc.wait()
+        except Exception:
+            pass
+        return None
     except Exception:
         return None
 
