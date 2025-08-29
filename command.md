@@ -1,3 +1,6 @@
+
+
+
 ### Neu aufgesetzter Mac: komplette Einrichtung (macOS)
 
 1) Xcode Command Line Tools installieren

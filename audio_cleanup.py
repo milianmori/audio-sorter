@@ -180,7 +180,7 @@ def measure_mean_volume_db(path: Path) -> Optional[float]:
 def trim_silence(
     src: Path,
     dst: Path,
-    noise_threshold_db: float = -50.0,
+    noise_threshold_db: float = -120.0,
     min_silence_ms: int = 200,
 ) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -646,7 +646,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--silence-threshold-db",
         type=float,
-        default=-50.0,
+        default=-120.0,
         help="Silence threshold in dBFS for trimming (default: -50)",
     )
     parser.add_argument(

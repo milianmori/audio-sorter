@@ -181,55 +181,14 @@ class Features:
     low_ratio: float
     mid_ratio: float
     high_ratio: float
-    # Enhanced features
-    rms: float
-    crest: float
-    bandwidth: float
-    contrast: float
-    tempo: float
-    chroma_peak_count: int
-    pitch_median: float
-    pitch_std: float
-    voiced_ratio: float
-    attack_time: float
-    decay_time: float
-    onset_density: float
-    stereo_corr: float
-    high8k_ratio: float
-    centroid_trend: float
 
 
 def extract_features(path: Path) -> Optional[Features]:
     try:
-        # Try high-fidelity read to estimate stereo correlation; fall back to librosa
-        try:
-            y_multi, sr = sf.read(str(path), dtype='float32', always_2d=True)
-            if y_multi.ndim == 1:
-                y_multi = y_multi[:, None]
-            num_channels = y_multi.shape[1]
-            if num_channels >= 2:
-                left = y_multi[:, 0]
-                right = y_multi[:, 1]
-                # Guard for zero-variance signals
-                if np.std(left) > 1e-12 and np.std(right) > 1e-12:
-                    stereo_corr = float(np.corrcoef(left, right)[0, 1])
-                else:
-                    stereo_corr = 1.0
-                y = y_multi.mean(axis=1)
-            else:
-                stereo_corr = 1.0
-                y = y_multi[:, 0]
-        except Exception:
-            y, sr = librosa.load(str(path), sr=None, mono=True)
-            stereo_corr = 1.0
-
+        y, sr = librosa.load(str(path), sr=None, mono=True)
         duration = librosa.get_duration(y=y, sr=sr)
         if duration <= 0:
             return None
-        # Analysis params
-        n_fft = 2048
-        hop_length = 512
-
         # HPSS
         harm, perc = librosa.effects.hpss(y)
         energy = np.sum(y**2) + 1e-12
@@ -238,23 +197,16 @@ def extract_features(path: Path) -> Optional[Features]:
         perc_ratio = float(perc_energy / energy)
         harm_ratio = float(harm_energy / energy)
         # Onsets
-        onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop_length)
+        onsets = librosa.onset.onset_detect(y=y, sr=sr)
         n_onsets = int(len(onsets))
-        onset_density = float(n_onsets / duration) if duration > 0 else 0.0
         # Spectral
-        zcr = float(np.mean(librosa.feature.zero_crossing_rate(y, frame_length=n_fft, hop_length=hop_length)))
-        centroid_series = librosa.feature.spectral_centroid(y=y, sr=sr, n_fft=n_fft, hop_length=hop_length)[0]
-        centroid = float(np.mean(centroid_series))
-        rolloff = float(np.mean(librosa.feature.spectral_rolloff(y=y, sr=sr, n_fft=n_fft, hop_length=hop_length)))
-        flatness = float(np.mean(librosa.feature.spectral_flatness(y=y, n_fft=n_fft, hop_length=hop_length)))
-        bandwidth = float(np.mean(librosa.feature.spectral_bandwidth(y=y, sr=sr, n_fft=n_fft, hop_length=hop_length)))
-        try:
-            contrast = float(np.mean(librosa.feature.spectral_contrast(y=y, sr=sr, n_fft=n_fft, hop_length=hop_length)))
-        except Exception:
-            contrast = 0.0
+        zcr = float(np.mean(librosa.feature.zero_crossing_rate(y)))
+        centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
+        rolloff = float(np.mean(librosa.feature.spectral_rolloff(y=y, sr=sr)))
+        flatness = float(np.mean(librosa.feature.spectral_flatness(y=y)))
         # Band energies (linear power)
-        S_lin = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop_length))**2
-        freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+        S_lin = np.abs(librosa.stft(y))**2
+        freqs = librosa.fft_frequencies(sr=sr)
         def band_ratio(fmin, fmax):
             mask = (freqs >= fmin) & (freqs < fmax)
             if not np.any(mask):
@@ -265,90 +217,7 @@ def extract_features(path: Path) -> Optional[Features]:
         low_ratio = band_ratio(20, 200)
         mid_ratio = band_ratio(200, 2000)
         high_ratio = band_ratio(2000, sr/2)
-        high8k_ratio = band_ratio(8000, sr/2)
-
-        # RMS and crest factor
-        rms_env = librosa.feature.rms(y=y, frame_length=n_fft, hop_length=hop_length)[0]
-        mean_rms = float(np.mean(rms_env))
-        peak_amp = float(np.max(np.abs(y))) if y.size else 0.0
-        crest = float((peak_amp + 1e-12) / (np.sqrt(np.mean(y**2)) + 1e-12))
-
-        # Attack/decay estimation from RMS envelope
-        if rms_env.size > 0 and peak_amp > 0:
-            peak_rms = float(np.max(rms_env))
-            thr_attack = 0.9 * peak_rms
-            thr_decay = max(peak_rms * 0.1, 1e-9)
-            peak_idx = int(np.argmax(rms_env))
-            # attack: first frame crossing 90% of peak
-            try:
-                attack_idx = int(np.where(rms_env >= thr_attack)[0][0])
-                attack_time = float(attack_idx * hop_length / sr)
-            except Exception:
-                attack_time = 0.0
-            # decay: from peak to 10% of peak
-            post = rms_env[peak_idx:]
-            try:
-                decay_rel_idx = int(np.where(post <= thr_decay)[0][0])
-                decay_time = float(decay_rel_idx * hop_length / sr)
-            except Exception:
-                decay_time = 0.0
-        else:
-            attack_time = 0.0
-            decay_time = 0.0
-
-        # Tempo from onset envelope
-        try:
-            onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
-            tempo = float(librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, hop_length=hop_length)[0])
-        except Exception:
-            tempo = 0.0
-
-        # Pitch via pYIN
-        try:
-            f0, voiced_flag, _ = librosa.pyin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'), sr=sr, frame_length=n_fft, hop_length=hop_length)
-            voiced_mask = ~np.isnan(f0)
-            voiced_ratio = float(np.mean(voiced_mask)) if f0 is not None and f0.size else 0.0
-            if np.any(voiced_mask):
-                pitch_vals = f0[voiced_mask]
-                pitch_median = float(np.median(pitch_vals))
-                pitch_std = float(np.std(pitch_vals))
-            else:
-                pitch_median = 0.0
-                pitch_std = 0.0
-        except Exception:
-            voiced_ratio = 0.0
-            pitch_median = 0.0
-            pitch_std = 0.0
-
-        # Chroma: estimate number of prominent pitch classes
-        try:
-            chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length)
-            chroma_mean = np.mean(chroma, axis=1)
-            if chroma_mean.size:
-                thr = 0.3 * float(np.max(chroma_mean))
-                chroma_peak_count = int(np.sum(chroma_mean >= thr))
-            else:
-                chroma_peak_count = 0
-        except Exception:
-            chroma_peak_count = 0
-
-        # Spectral centroid trend (slope over time)
-        try:
-            t = np.arange(centroid_series.shape[0], dtype=float) * (hop_length / sr)
-            if t.size >= 2:
-                centroid_trend = float(np.polyfit(t, centroid_series, 1)[0])
-            else:
-                centroid_trend = 0.0
-        except Exception:
-            centroid_trend = 0.0
-
-        return Features(
-            duration, sr, n_onsets, perc_ratio, harm_ratio, zcr, centroid, rolloff, flatness,
-            low_ratio, mid_ratio, high_ratio,
-            mean_rms, crest, bandwidth, contrast, tempo, chroma_peak_count,
-            pitch_median, pitch_std, voiced_ratio, attack_time, decay_time, onset_density,
-            stereo_corr, high8k_ratio, centroid_trend
-        )
+        return Features(duration, sr, n_onsets, perc_ratio, harm_ratio, zcr, centroid, rolloff, flatness, low_ratio, mid_ratio, high_ratio)
     except Exception:
         return None
 
@@ -426,83 +295,58 @@ def classify_by_heuristics(f: Features) -> Tuple[str, str, str]:
     on = f.n_onsets
     perc = f.perc_ratio
     harm = f.harm_ratio
-    tempo = f.tempo
-    chroma_peaks = f.chroma_peak_count
-    pitch_med = f.pitch_median
-    pitch_var = f.pitch_std
-    voiced = f.voiced_ratio
-    attack = f.attack_time
-    decay = f.decay_time
-    onset_dens = f.onset_density
-    crest = f.crest
-    bandwidth = f.bandwidth
-    contrast = f.contrast
-    stereo_corr = f.stereo_corr
-    high8 = f.high8k_ratio
-    cent_trend = f.centroid_trend
-    rms = f.rms
-
-    # 0) Voice/Vocals heuristic without ML
-    if voiced >= 0.6 and 80.0 <= pitch_med <= 400.0 and flat < 0.25 and harm > 0.4:
-        sub = "Sung" if pitch_var < 50.0 else "Spoken"
-        return ("7_Vocals", sub, "voiced harmonic content")
 
     # 1) Field/ambience
-    if perc < 0.3 and on <= 1 and dur > 5.0 and flat > 0.25 and voiced < 0.2:
+    if perc < 0.3 and on <= 1 and dur > 5.0 and flat > 0.3:
         return ("8_Field_Recordings", "Ambience", "low-perc long noisy ambience")
 
     # 2) Drums (percussive, short to medium, onsets 1-6)
     if perc >= 0.4 and on <= 6 and dur <= 5.0:
         # Kick: strong low, low centroid
-        if low > 0.55 and cent < 1200 and on <= 2 and attack <= 0.05 and crest > 5.0:
+        if low > 0.55 and cent < 1200 and on <= 2:
             return ("1_Kicks", "Electronic", "low-heavy percussive short")
         # Snare/Clap: broadband/noisy mid-high, flatness höher
         if (mid > 0.35 or high > 0.25) and flat > 0.2:
-            if high > mid and dur < 1.0 and stereo_corr < 0.98:
+            if high > mid and dur < 1.0:
                 return ("2_Snares_Claps", "Claps", "percussive high short noisy")
             else:
                 return ("2_Snares_Claps", "Snares_Electronic", "percussive mid-high noisy")
         # HiHats/Shaker: sehr hohe Helligkeit, hohe ZCR, ggf. mehrere feine Onsets
-        if (high > 0.45 or high8 > 0.4) and cent > 4000 and zcr > 0.1:
-            if on >= 3 or onset_dens > 1.5:
+        if high > 0.45 and cent > 4000 and zcr > 0.1:
+            if on >= 3:
                 return ("3_HiHats", "Shaker", "many fine onsets high freq")
             else:
                 return ("3_HiHats", "Closed", "bright percussive hat-like")
         # Toms
-        if low > 0.25 and mid > 0.25 and (harm > 0.3 or voiced > 0.3) and on <= 3 and 80.0 <= pitch_med <= 300.0:
+        if low > 0.25 and mid > 0.25 and harm > 0.3 and on <= 3:
             return ("4_Percussion", "Toms", "low-mid tonal percussive")
         # Cymbals
-        if (high > 0.5 or high8 > 0.45) and dur > 1.5 and flat > 0.25 and decay > 0.5:
+        if high > 0.5 and dur > 1.5 and flat > 0.25:
             return ("4_Percussion", "Cymbals", "high energy long decay")
 
     # 3) Synth material / musical one-shots
     if harm >= 0.5:
-        if low > 0.5 and cent < 800 and pitch_med <= 200.0:
+        if low > 0.5 and cent < 800:
             return ("5_Synth", "Bass", "harmonic low-dominant")
-        if dur > 2.5 and on <= 2 and flat < 0.2 and bandwidth < 2500:
+        if dur > 2.5 and on <= 2 and flat < 0.2:
             return ("5_Synth", "Pad", "long sustained harmonic")
-        if dur <= 1.2 and on <= 2 and cent > 1500 and attack < 0.05 and decay < 0.6 and crest > 6.0:
+        if dur <= 1.2 and on <= 2 and cent > 1500:
             return ("5_Synth", "Pluck", "short bright harmonic")
-        if cent >= 1200 and on <= 3 and (pitch_med > 300.0 or chroma_peaks <= 2):
+        if cent >= 1200 and on <= 3:
             return ("5_Synth", "Lead", "mid-high harmonic single")
-        if dur <= 1.0 and on <= 2 and chroma_peaks >= 3:
+        if dur <= 1.0 and on <= 2:
             return ("5_Synth", "Stabs", "short harmonic chord-like")
-        if dur > 1.0 and on <= 4 and chroma_peaks >= 3:
+        if dur > 1.0 and on <= 4:
             return ("5_Synth", "Chords", "sustained harmonic chord")
-        if dur > 1.0 and onset_dens >= 1.5 and voiced > 0.4:
-            return ("5_Synth", "Arp", "repeated pitched onsets")
 
     # 4) OneShots FX etc.
-    if perc >= 0.3 and dur >= 0.8 and on <= 4 and flat >= 0.25 and high >= 0.3 and crest > 6.0 and decay > 0.4:
+    if perc >= 0.3 and dur >= 0.8 and on <= 4 and flat >= 0.25 and low < 0.4 and high >= 0.3:
         return ("6_OneShots", "Impacts", "broadband impact-like")
     if dur >= 1.0 and on <= 3 and high >= 0.25 and flat >= 0.2:
-        if abs(cent_trend) > 50.0:
-            return ("6_OneShots", "Risers" if cent_trend > 0 else "Downers", "centroid trend")
-        return ("6_OneShots", "Transitions", "noisy transitional")
-    if dur >= 1.0 and flat >= 0.2 and voiced < 0.2 and zcr < 0.1:
-        return ("6_OneShots", "Textures", "noisy sustained texture")
-    if voiced > 0.4 and dur <= 1.5 and chroma_peaks <= 2:
-        return ("6_OneShots", "Tonal", "short pitched one-shot")
+        if zcr < 0.05:
+            return ("6_OneShots", "Textures", "noisy sustained texture")
+        else:
+            return ("6_OneShots", "Transitions", "noisy transitional")
 
     # 5) Fallbacks
     if dur > 4.0 and perc < 0.4:
@@ -655,9 +499,7 @@ def main():
     # Log setup
     log_rows: List[List[str]] = []
     header = [
-        'source_path','dest_path','category','subcategory','reason',
-        'duration','sr','n_onsets','perc_ratio','harm_ratio','zcr','centroid','rolloff','flatness','low_ratio','mid_ratio','high_ratio',
-        'rms','crest','bandwidth','contrast','tempo','chroma_peak_count','pitch_median','pitch_std','voiced_ratio','attack_time','decay_time','onset_density','stereo_corr','high8k_ratio','centroid_trend',
+        'source_path','dest_path','category','subcategory','reason','duration','sr','n_onsets','perc_ratio','harm_ratio','zcr','centroid','rolloff','flatness','low_ratio','mid_ratio','high_ratio',
         'normalized','peak_before','peak_after','target_dbfs'
     ]
     log_rows.append(header)
@@ -695,13 +537,9 @@ def main():
                     f"{feat.perc_ratio:.3f}", f"{feat.harm_ratio:.3f}", f"{feat.zcr:.4f}",
                     f"{feat.centroid:.1f}", f"{feat.rolloff:.1f}", f"{feat.flatness:.3f}",
                     f"{feat.low_ratio:.3f}", f"{feat.mid_ratio:.3f}", f"{feat.high_ratio:.3f}",
-                    f"{feat.rms:.6f}", f"{feat.crest:.3f}", f"{feat.bandwidth:.1f}", f"{feat.contrast:.3f}", f"{feat.tempo:.2f}", str(feat.chroma_peak_count),
-                    f"{feat.pitch_median:.2f}", f"{feat.pitch_std:.2f}", f"{feat.voiced_ratio:.3f}", f"{feat.attack_time:.3f}", f"{feat.decay_time:.3f}", f"{feat.onset_density:.3f}",
-                    f"{feat.stereo_corr:.3f}", f"{feat.high8k_ratio:.3f}", f"{feat.centroid_trend:.2f}",
                 ]
             else:
-                row += ["", "", "", "", "", "", "", "", "", "", "", "",
-                        "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
+                row += ["", "", "", "", "", "", "", "", "", "", "", ""]
             # Normalization columns
             row += [
                 "1" if normalized else "0",
@@ -743,13 +581,9 @@ def main():
                 f"{feat.perc_ratio:.3f}", f"{feat.harm_ratio:.3f}", f"{feat.zcr:.4f}",
                 f"{feat.centroid:.1f}", f"{feat.rolloff:.1f}", f"{feat.flatness:.3f}",
                 f"{feat.low_ratio:.3f}", f"{feat.mid_ratio:.3f}", f"{feat.high_ratio:.3f}",
-                f"{feat.rms:.6f}", f"{feat.crest:.3f}", f"{feat.bandwidth:.1f}", f"{feat.contrast:.3f}", f"{feat.tempo:.2f}", str(feat.chroma_peak_count),
-                f"{feat.pitch_median:.2f}", f"{feat.pitch_std:.2f}", f"{feat.voiced_ratio:.3f}", f"{feat.attack_time:.3f}", f"{feat.decay_time:.3f}", f"{feat.onset_density:.3f}",
-                f"{feat.stereo_corr:.3f}", f"{feat.high8k_ratio:.3f}", f"{feat.centroid_trend:.2f}",
             ]
         else:
-            row += ["", "", "", "", "", "", "", "", "", "", "", "",
-                    "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
+            row += ["", "", "", "", "", "", "", "", "", "", "", ""]
         # Normalization columns
         row += [
             "1" if normalized else "0",
