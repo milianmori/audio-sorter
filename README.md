@@ -77,6 +77,13 @@ python audio_all_in_one.py all --src \/path\/to\/src --dst \/path\/to\/dst \
 
 
 
+source .venv/bin/activate
 
 python3 audio_all_in_one.py all --src /Users/milianmori/Documents/repositories/audio-sorter/test-files/src --dst /Users/milianmori/Documents/repositories/audio-sorter/test-files/dest \
+  --ml --dedupe --delete-duplicates --log sort_log.csv
+
+python3 audio_all_in_one.py all --src "/Volumes/MM_Archive/07042020 Project/" --dst "/Users/mm/Desktop/audio cosmos drone" \
+  --ml --dedupe --delete-duplicates --log sort_log.csv
+
+python3 audio_all_in_one.py all --src "/Volumes/MM_Archive/As You Were Listening" --dst "/Users/mm/Desktop/audio cosmose as you were listening" \
   --ml --dedupe --delete-duplicates --log sort_log.csv
