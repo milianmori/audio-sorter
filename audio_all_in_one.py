@@ -99,6 +99,8 @@ def run_cmd(cmd: List[str], timeout_s: Optional[float] = None) -> subprocess.Com
             stderr=subprocess.PIPE,
             check=False,
             text=True,
+            encoding="utf-8",  # ensure stable decoding
+            errors="replace",   # avoid UnicodeDecodeError on odd bytes from tools
             timeout=timeout_s,
         )
     except subprocess.TimeoutExpired:
