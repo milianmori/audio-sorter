@@ -23,9 +23,9 @@ pip install tensorflow-macos==2.16.2 tensorflow-metal tensorflow-hub
 - Legacy scripts still work: `audio_cleanup.py`, `audio-sorter.py`
 
 ### Usage
-- Cleanup only (in-place):
+- Cleanup only (non-destructive: creates a working copy inside `--dst`):
 ```bash
-python audio_all_in_one.py cleanup \/path\/to\/src \
+python audio_all_in_one.py cleanup /path/to/src --dst /path/to/destination \
   --dedupe --delete-duplicates
 ```
 - Sort only (to destination):
@@ -33,7 +33,7 @@ python audio_all_in_one.py cleanup \/path\/to\/src \
 python audio_all_in_one.py sort --src \/path\/to\/src --dst \/path\/to\/dst \
   --ml --log sort_log.csv
 ```
-- Cleanup + Sort:
+- Cleanup + Sort (non-destructive: first copies the whole source into destination):
 ```bash
 python audio_all_in_one.py all --src \/path\/to\/src --dst \/path\/to\/dst \
   --ml --dedupe --delete-duplicates --log sort_log.csv
@@ -43,8 +43,8 @@ python audio_all_in_one.py all --src \/path\/to\/src --dst \/path\/to\/dst \
 
 #### cleanup
 1. Verify `ffprobe`/`ffmpeg` availability.
-2. Scan `src` for supported extensions.
-3. For each file:
+2. If `--dst` is provided, create a full working copy of `src` inside `dst` and operate there; otherwise operate in-place (back-compat).
+3. Scan the processing root for supported extensions. For each file:
    - Probe with `ffprobe`; skip files without audio streams.
    - Measure mean volume with `volumedetect`.
    - If pure digital silence and skipping is enabled, move to `src/tobedeleted` (if `--delete-duplicates`) or skip.
@@ -65,10 +65,11 @@ python audio_all_in_one.py all --src \/path\/to\/src --dst \/path\/to\/dst \
 4. Write sorter log to `--log`.
 
 #### all
-1. Run the entire `cleanup` pipeline on `--src` (with provided cleanup flags).
-2. Optionally de-duplicate.
-3. Write `src/log.csv` (trim log).
-4. Run the entire `sort` pipeline from `--src` to `--dst` (with `--ml`, `--exts`, `--log`).
+1. Create a full working copy of `--src` inside `--dst`.
+2. Run the entire `cleanup` pipeline on the working copy (with provided cleanup flags).
+3. Optionally de-duplicate within the working copy.
+4. Write `working_copy/log.csv` (trim log).
+5. Run the entire `sort` pipeline from the working copy to `--dst` (with `--ml`, `--exts`, `--log`).
 
 ### Notes
 - Sorting supports: `.wav,.aiff,.aif,.mp3,.flac,.m4a` (configurable via `--exts`).
@@ -86,4 +87,10 @@ python3 audio_all_in_one.py all --src "/Volumes/MM_Archive/07042020 Project/" --
   --ml --dedupe --delete-duplicates --log sort_log.csv
 
 python3 audio_all_in_one.py all --src "/Volumes/MM_Archive/As You Were Listening" --dst "/Users/mm/Desktop/audio cosmose as you were listening" \
+  --ml --dedupe --delete-duplicates --log sort_log.csv
+
+python3 audio_all_in_one.py all --src "/Volumes/MM_Archive/As You Were Listening" --dst "/Users/mm/Desktop/audio cosmose as you were listening" \
+  --ml --dedupe --delete-duplicates --log sort_log.csv
+
+  python3 audio_all_in_one.py all --src "/Volumes/MM_Archive/07042020 Project" --dst "/Users/milianmori/Desktop/audio cosmos 07042020" \
   --ml --dedupe --delete-duplicates --log sort_log.csv

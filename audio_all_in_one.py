@@ -302,6 +302,20 @@ def find_audio_files(root: Path) -> Iterable[Path]:
             yield p
 
 
+def make_working_copy(src: Path, dst_root: Path) -> Path:
+    """Create a full working copy of src inside dst_root and return its path.
+
+    The working copy is created as a timestamped subdirectory to avoid collisions.
+    """
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    work_dir = dst_root / f"_source_copy_{ts}"
+    # Ensure destination root exists
+    work_dir.parent.mkdir(parents=True, exist_ok=True)
+    # Copy entire tree (non-destructive to src)
+    shutil.copytree(src, work_dir)
+    return work_dir
+
+
 def quantize_ms(seconds: float) -> int:
     return int(round(seconds * 1000.0))
 
@@ -1034,8 +1048,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Audio Tools: cleanup and sort")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_clean = sub.add_parser("cleanup", help="Trim/skip silence and dedupe in-place")
+    p_clean = sub.add_parser("cleanup", help="Trim/skip silence and dedupe without touching originals (use --dst)")
     p_clean.add_argument("input", type=Path, help="Input directory to scan")
+    p_clean.add_argument("--dst", type=Path, help="Destination root where a working copy of INPUT will be created")
     p_clean.add_argument("--no-skip-silent", action="store_true", help="Do not skip pure digital silence")
     p_clean.add_argument("--no-trim", action="store_true", help="Do not trim leading/trailing silence")
     p_clean.add_argument("--silence-threshold-db", type=float, default=-50.0)
@@ -1086,14 +1101,29 @@ def main() -> int:
         HASH_TIMEOUT_S = float(args.hash_timeout_s)
         skip_silent = not args.no_skip_silent
         trim = not args.no_trim
+
+        # Decide processing root: prefer working copy inside --dst if provided
+        work_root: Path
+        if getattr(args, "dst", None):
+            dst_root = Path(args.dst).expanduser().resolve()
+            try:
+                work_root = make_working_copy(input_dir, dst_root)
+                print(f"Working copy created: {work_root}")
+            except Exception as e:
+                print(f"Error creating working copy in {dst_root}: {e}", file=sys.stderr)
+                return 2
+        else:
+            # Back-compat: if --dst not provided, operate in-place (original behavior)
+            work_root = input_dir
+
         default_move_dir: Optional[Path] = (
-            (input_dir / "tobedeleted") if args.delete_duplicates and args.move_duplicates_to is None else args.move_duplicates_to
+            (work_root / "tobedeleted") if args.delete_duplicates and args.move_duplicates_to is None else args.move_duplicates_to
         )
         trim_log_rows: List[List[str]] = [[
             "source_path","duration_before_s","duration_after_s","trimmed_ms","threshold_db","min_silence_ms","mean_volume_db",
         ]]
         process_in_place(
-            input_dir=input_dir,
+            input_dir=work_root,
             skip_silent=skip_silent,
             trim=trim,
             silence_threshold_db=args.silence_threshold_db,
@@ -1102,8 +1132,8 @@ def main() -> int:
             trim_log_rows=trim_log_rows,
         )
         if args.dedupe or args.delete_duplicates:
-            target_dir = (args.dedupe_path or input_dir).resolve()
-            default_move_dir = (input_dir / "tobedeleted") if args.delete_duplicates and args.move_duplicates_to is None else args.move_duplicates_to
+            target_dir = (args.dedupe_path or work_root).resolve()
+            default_move_dir = (work_root / "tobedeleted") if args.delete_duplicates and args.move_duplicates_to is None else args.move_duplicates_to
             dedupe_similar(
                 target_dir=target_dir,
                 name_similarity_threshold=args.name_similarity,
@@ -1111,7 +1141,7 @@ def main() -> int:
                 delete=args.delete_duplicates,
                 move_to=default_move_dir,
             )
-        log_path = input_dir / "log.csv"
+        log_path = work_root / "log.csv"
         try:
             with open(log_path, "w", newline="", encoding="utf-8") as fp:
                 writer = csv.writer(fp)
@@ -1133,33 +1163,40 @@ def main() -> int:
         dst = Path(args.dst).expanduser().resolve()
         skip_silent = not args.no_skip_silent
         trim = not args.no_trim
+        # Create working copy of src inside dst before any processing
+        try:
+            work_src = make_working_copy(src, dst)
+            print(f"Working copy created for 'all': {work_src}")
+        except Exception as e:
+            print(f"Error creating working copy in {dst}: {e}", file=sys.stderr)
+            return 2
         trim_log_rows: List[List[str]] = [[
             "source_path","duration_before_s","duration_after_s","trimmed_ms","threshold_db","min_silence_ms","mean_volume_db",
         ]]
         process_in_place(
-            input_dir=src,
+            input_dir=work_src,
             skip_silent=skip_silent,
             trim=trim,
             silence_threshold_db=args.silence_threshold_db,
             min_silence_ms=args.min_silence_ms,
-            silent_move_to=(src / "tobedeleted") if args.delete_duplicates else None,
+            silent_move_to=(work_src / "tobedeleted") if args.delete_duplicates else None,
             trim_log_rows=trim_log_rows,
         )
         if args.dedupe or args.delete_duplicates:
             dedupe_similar(
-                target_dir=src,
+                target_dir=work_src,
                 name_similarity_threshold=0.85,
                 duration_tolerance_ms=args.duration_tolerance_ms,
                 delete=args.delete_duplicates,
-                move_to=(src / "tobedeleted") if args.delete_duplicates else None,
+                move_to=(work_src / "tobedeleted") if args.delete_duplicates else None,
             )
         try:
-            with open((src / "log.csv"), "w", newline="", encoding="utf-8") as fp:
+            with open((work_src / "log.csv"), "w", newline="", encoding="utf-8") as fp:
                 writer = csv.writer(fp)
                 writer.writerows(trim_log_rows)
         except Exception:
             pass
-        run_sort(src=src, dst=dst, use_ml=bool(args.ml), copy_only=False, log_path=Path(args.log), exts_csv=str(args.exts))
+        run_sort(src=work_src, dst=dst, use_ml=bool(args.ml), copy_only=False, log_path=Path(args.log), exts_csv=str(args.exts))
         return 0
 
     return 0
